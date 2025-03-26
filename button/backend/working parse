@@ -1,0 +1,76 @@
+
+const express = require("express");
+const multer = require("multer");
+const mindee = require("mindee");
+const cors = require("cors");
+const fs = require("fs");
+const path = require("path");
+require("dotenv").config();
+
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+app.use(express.json());
+app.use(cors());
+
+// Ensure "uploads" folder exists
+const uploadDir = path.join(__dirname, "uploads");
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir);
+}
+
+// Multer setup for file uploads (store temporarily)
+const storage = multer.diskStorage({
+  destination: uploadDir,
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + "-" + file.originalname);
+  },
+});
+const upload = multer({ storage: storage });
+
+// Mindee API Client
+const mindeeClient = new mindee.Client({ apiKey: process.env.MINDEE_API_KEY });
+
+// Upload and process receipt
+app.post("/upload", upload.single("receipt"), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+
+        const filePath = path.join(uploadDir, req.file.filename);
+
+        // Parse receipt with Mindee API
+        const apiResponse = await mindeeClient.parse(mindee.product.ReceiptV5, mindeeClient.docFromPath(filePath));
+
+        // Delete the file after processing
+        fs.unlinkSync(filePath);
+
+        // Extract product names and prices using correct field names
+        const lineItems = apiResponse.document.inference?.prediction?.lineItems || [];
+
+        if (lineItems.length === 0) {
+            console.warn("⚠️ No line items found in the receipt.");
+        }
+
+        const extractedItems = lineItems.map(item => ({
+            name: item.description || "Unknown",
+            price: item.totalAmount ? parseFloat(item.totalAmount) : 0
+        }));
+
+        // Log extracted product names and prices
+        console.log("\n🛒 Extracted Products:");
+        extractedItems.forEach(item => {
+            console.log(`📌 Product: ${item.name}, 💰 Total Price: ${item.price}`);
+        });
+
+        res.json({ message: "Receipt processed successfully", items: extractedItems });
+
+    } catch (error) {
+        console.error("❌ Mindee API Error:", error);
+        res.status(500).json({ error: "Error processing receipt", details: error.message });
+    }
+});
+
+
+  
+
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
